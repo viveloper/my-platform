@@ -5,7 +5,7 @@ import {
   buildAuthorizationUrl,
   authorizationCodeGrant,
   fetchUserInfo,
-  allowInsecureRequests,
+  refreshTokenGrant,
 } from "openid-client";
 import { getOIDCConfig, REDIRECT_URI } from "./config.js";
 import crypto from "node:crypto"; // Session ID 생성을 위해 사용
@@ -22,6 +22,17 @@ function parseJwt(token) {
 // [핵심] In-Memory Session Store (실무에선 Redis로 대체될 부분)
 // 구조: Map<sessionId, { accessToken, refreshToken, userInfo }>
 const sessionStore = new Map();
+
+function isExpired(token) {
+  try {
+    const payload = parseJwt(token);
+    // exp는 '초' 단위, Date.now()는 '밀리초' 단위
+    const now = Math.floor(Date.now() / 1000);
+    return payload.exp < now + 10; // 만료 10초 전이면 만료된 걸로 침
+  } catch (e) {
+    return true; // 파싱 안되면 만료된 셈 침
+  }
+}
 
 async function startServer() {
   const fastify = Fastify({ logger: true });
@@ -43,17 +54,50 @@ async function startServer() {
     preHandler: async (request, reply) => {
       const sessionId = request.cookies.sessionId;
 
+      // [시나리오 B] 쿠키 없음 -> 즉시 퇴장
       if (!sessionId || !sessionStore.has(sessionId)) {
-        throw new Error("인증되지 않은 사용자입니다."); // 401 반환
+        throw new Error("No Session");
       }
 
       const session = sessionStore.get(sessionId);
 
-      // ★ 여기가 마법이 일어나는 곳 ★
-      // 쿠키는 버리고, Access Token을 헤더에 심습니다.
-      request.headers["authorization"] = `Bearer ${session.accessToken}`;
+      // [시나리오 A] 토큰 만료 체크 & 갱신
+      if (isExpired(session.accessToken)) {
+        console.log("⚠️ Access Token 만료됨! Refresh 시도...");
 
-      // (선택) 백엔드가 알 필요 없는 쿠키 헤더는 삭제하여 보안 강화
+        if (!session.refreshToken) {
+          throw new Error("Refresh Token 없음. 재로그인 필요.");
+        }
+
+        try {
+          // 1. Keycloak에 Refresh Token을 주고 새 토큰셋 받기
+          const newTokenSet = await refreshTokenGrant(
+            oidcConfig,
+            session.refreshToken,
+            {
+              access_token: session.accessToken, // v6 일부 스펙 대응
+            },
+          );
+
+          // 2. 세션 정보 업데이트
+          session.accessToken = newTokenSet.access_token;
+          // Refresh Token Rotation (새 리프레시 토큰이 오면 교체, 안 오면 기존 유지)
+          if (newTokenSet.refresh_token) {
+            session.refreshToken = newTokenSet.refresh_token;
+          }
+
+          sessionStore.set(sessionId, session); // 저장소 갱신
+          console.log("♻️ Token Refresh 성공! (사용자는 모름)");
+        } catch (refreshError) {
+          console.error("❌ Refresh 실패 (완전 만료):", refreshError.message);
+          sessionStore.delete(sessionId); // 세션 파기
+          reply.clearCookie("sessionId");
+          throw new Error("Session Expired");
+        }
+      }
+
+      // 정상(또는 갱신된) 토큰 주입
+      request.headers["authorization"] = `Bearer ${session.accessToken}`;
       delete request.headers["cookie"];
     },
 
