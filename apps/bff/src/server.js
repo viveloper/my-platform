@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import fastifyCookie from "@fastify/cookie"; // 1. 쿠키 플러그인 import
+import fastifyProxy from "@fastify/http-proxy";
 import {
   buildAuthorizationUrl,
   authorizationCodeGrant,
@@ -31,6 +32,37 @@ async function startServer() {
   fastify.register(fastifyCookie, {
     secret: "super-secret-key-for-cookie-signing-must-be-long",
     hook: "onRequest",
+  });
+
+  // 3. Token Translation Proxy 설정 (핵심!)
+  fastify.register(fastifyProxy, {
+    upstream: "http://localhost:4000", // 백엔드 주소
+    prefix: "/api", // /api 로 시작하는 요청은 여기로
+
+    // 프록시 전에 실행될 로직 (토큰 주입)
+    preHandler: async (request, reply) => {
+      const sessionId = request.cookies.sessionId;
+
+      if (!sessionId || !sessionStore.has(sessionId)) {
+        throw new Error("인증되지 않은 사용자입니다."); // 401 반환
+      }
+
+      const session = sessionStore.get(sessionId);
+
+      // ★ 여기가 마법이 일어나는 곳 ★
+      // 쿠키는 버리고, Access Token을 헤더에 심습니다.
+      request.headers["authorization"] = `Bearer ${session.accessToken}`;
+
+      // (선택) 백엔드가 알 필요 없는 쿠키 헤더는 삭제하여 보안 강화
+      delete request.headers["cookie"];
+    },
+
+    // 에러 처리
+    errorHandler: (error, request, reply) => {
+      reply
+        .code(401)
+        .send({ error: "Proxy Unauthorized", message: error.message });
+    },
   });
 
   fastify.get("/", async (request, reply) => {
