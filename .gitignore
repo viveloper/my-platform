@@ -1,0 +1,45 @@
+############################
+# OS / Editor
+############################
+.DS_Store
+Thumbs.db
+
+.idea
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+############################
+# Logs
+############################
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+############################
+# Node / Package Manager
+############################
+node_modules/
+.pnpm-store/
+
+############################
+# Environment files
+############################
+.env
+.env.*
+!.env.example
+
+############################
+# Build outputs (common)
+############################
+dist/
+build/
+out/
+
+############################
+# Next.js
+############################
+.next/
+.vercel/
